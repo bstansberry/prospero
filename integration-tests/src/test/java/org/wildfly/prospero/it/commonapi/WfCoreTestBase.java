@@ -20,8 +20,8 @@ package org.wildfly.prospero.it.commonapi;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
 import org.eclipse.aether.deployment.DeployRequest;
+import org.eclipse.aether.deployment.DeployResult;
 import org.eclipse.aether.deployment.DeploymentException;
-import org.eclipse.aether.installation.InstallResult;
 import org.eclipse.aether.repository.RemoteRepository;
 import org.junit.AfterClass;
 import org.junit.Before;
@@ -40,8 +40,6 @@ import org.eclipse.aether.DefaultRepositorySystemSession;
 import org.eclipse.aether.RepositorySystem;
 import org.eclipse.aether.artifact.Artifact;
 import org.eclipse.aether.artifact.DefaultArtifact;
-import org.eclipse.aether.installation.InstallRequest;
-import org.eclipse.aether.installation.InstallationException;
 import org.eclipse.aether.resolution.ArtifactRequest;
 import org.eclipse.aether.resolution.ArtifactResolutionException;
 import org.eclipse.aether.resolution.ArtifactResult;
@@ -80,7 +78,6 @@ public class WfCoreTestBase {
     public static final String CHANNEL_COMPONENT_UPDATES = "manifests/wfcore-upgrade-component.yaml";
     public static final Repository REPOSITORY_MAVEN_CENTRAL = new Repository("maven-central", "https://repo1.maven.org/maven2/");
     public static final Repository REPOSITORY_NEXUS = new Repository("nexus", "https://repository.jboss.org/nexus/content/groups/public-jboss");
-    public static final Repository REPOSITORY_MRRC_GA = new Repository("maven-redhat-ga", "https://maven.repository.redhat.com/ga");
     public static final VersionResolverFactory CHANNELS_RESOLVER_FACTORY = new VersionResolverFactory(null, null);
 
     protected static Artifact resolvedUpgradeArtifact;
@@ -94,6 +91,9 @@ public class WfCoreTestBase {
     protected MavenOptions mavenOptions;
     protected MavenSessionManager mavenSessionManager;
 
+    protected static Path updateRepositoryPath;
+    protected static RemoteRepository updateRepository;
+
     @Rule
     public TemporaryFolder temp = new TemporaryFolder();
 
@@ -103,27 +103,30 @@ public class WfCoreTestBase {
     public static void deployUpgrade() throws Exception {
         localCachePath = Files.createTempDirectory("local-cache").toAbsolutePath();
         testRepo = Files.createTempDirectory("test-fp-repo");
+        updateRepositoryPath = Files.createTempDirectory("updates-repository");
+        updateRepository = new RemoteRepository.Builder("updates", "default", updateRepositoryPath.toUri().toURL().toExternalForm()).build();
         final MavenSessionManager msm = new MavenSessionManager(MavenOptions.builder()
                 .setLocalCachePath(localCachePath)
                 .setOffline(false)
                 .build());
         final RepositorySystem system = msm.newRepositorySystem();
-        final DefaultRepositorySystemSession session = msm.newRepositorySystemSession(system, false);
+        final DefaultRepositorySystemSession session = msm.newRepositorySystemSession(system);
 
         /* mock a wildfly-core feature pack that requires a channel resolve
          * the mocked artifact lives in {@code testRepo}
          */
         deployFeaturePackRequiringChannels(system, session);
 
-        resolvedUpgradeArtifact = installIfMissing(system, session, "org.wildfly.core", "wildfly-cli", null, "jar");
-        resolvedUpgradeClientArtifact = installIfMissing(system, session, "org.wildfly.core", "wildfly-cli", "client", "jar");
-        installIfMissing(system, session, "org.wildfly.core", "wildfly-core-galleon-pack", null, "zip");
+        resolvedUpgradeArtifact = deployIfMissing(system, session, "org.wildfly.core", "wildfly-cli", null, "jar");
+        resolvedUpgradeClientArtifact = deployIfMissing(system, session, "org.wildfly.core", "wildfly-cli", "client", "jar");
+        deployIfMissing(system, session, "org.wildfly.core", "wildfly-core-galleon-pack", null, "zip");
     }
 
     @AfterClass
     public static void removeCache() throws Exception {
         FileUtils.deleteQuietly(localCachePath.toFile());
         FileUtils.deleteQuietly(testRepo.toFile());
+        FileUtils.deleteQuietly(updateRepositoryPath.toFile());
     }
 
     @Before
@@ -138,19 +141,21 @@ public class WfCoreTestBase {
         installation = new ProvisioningAction(outputPath, mavenOptions, new CliConsole());
     }
 
-    private static Artifact installIfMissing(RepositorySystem system, DefaultRepositorySystemSession session, String groupId, String artifactId, String classifier, String extension) throws ArtifactResolutionException, InstallationException {
+    protected static Artifact deployIfMissing(RepositorySystem system, DefaultRepositorySystemSession session, String groupId, String artifactId, String classifier, String extension) throws ArtifactResolutionException, DeploymentException {
         final ArtifactRequest artifactRequest = new ArtifactRequest();
         Artifact updateCli = new DefaultArtifact(groupId, artifactId, classifier, extension, UPGRADE_VERSION);
         artifactRequest.setArtifact(updateCli);
+        artifactRequest.setRepositories(List.of(updateRepository));
         Artifact upgradeArtifact;
         try {
             final ArtifactResult result = system.resolveArtifact(session, artifactRequest);
             upgradeArtifact = result.getArtifact();
         } catch (ArtifactResolutionException e) {
-            final InstallRequest installRequest = new InstallRequest();
+            final DeployRequest deployRequest = new DeployRequest();
             updateCli = updateCli.setFile(resolveExistingCliArtifact(system, session, groupId, artifactId, classifier, extension));
-            installRequest.addArtifact(updateCli);
-            final InstallResult result = system.install(session, installRequest);
+            deployRequest.addArtifact(updateCli);
+            deployRequest.setRepository(updateRepository);
+            final DeployResult result = system.deploy(session, deployRequest);
             upgradeArtifact = result.getArtifacts().stream().findFirst().get();
         }
         return upgradeArtifact;
@@ -189,10 +194,8 @@ public class WfCoreTestBase {
         return Arrays.asList(
                 REPOSITORY_MAVEN_CENTRAL,
                 REPOSITORY_NEXUS,
-                REPOSITORY_MRRC_GA,
                 new Repository("test-fp-repo", testRepo.toFile().toURI().toString()),
-                // remove when galleon-plugin 6.4.1.Final is available
-                new Repository("galleon-plugin-repo", "file:/Users/spyrkob/workspaces/set/prospero/prospero/local-repo")
+                new Repository("update-repository", updateRepository.getUrl())
         );
     }
 

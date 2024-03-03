@@ -23,6 +23,7 @@ import org.junit.Assert;
 import org.wildfly.channel.Channel;
 import org.wildfly.channel.Repository;
 import org.wildfly.prospero.api.exceptions.MetadataException;
+import org.wildfly.prospero.galleon.ArtifactCache;
 import org.wildfly.prospero.metadata.ManifestVersionRecord;
 import org.wildfly.prospero.api.ArtifactChange;
 import org.wildfly.prospero.actions.InstallationHistoryAction;
@@ -48,11 +49,13 @@ import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -83,7 +86,9 @@ public class InstallationHistoryActionTest extends WfCoreTestBase {
                 provisioningDefinition.resolveChannels(CHANNELS_RESOLVER_FACTORY));
 
         // updateCore
-        MetadataTestUtils.prepareChannel(outputPath.resolve(MetadataTestUtils.INSTALLER_CHANNELS_FILE_PATH), CHANNEL_COMPONENT_UPDATES, CHANNEL_BASE_CORE_19);
+        MetadataTestUtils.prepareChannel(outputPath.resolve(MetadataTestUtils.INSTALLER_CHANNELS_FILE_PATH),
+                defaultRemoteRepositories(),
+                CHANNEL_COMPONENT_UPDATES, CHANNEL_BASE_CORE_19);
         updateAction().performUpdate();
 
         // get history
@@ -105,7 +110,9 @@ public class InstallationHistoryActionTest extends WfCoreTestBase {
         installation.provision(provisioningDefinition.toProvisioningConfig(),
                 provisioningDefinition.resolveChannels(CHANNELS_RESOLVER_FACTORY));
 
-        MetadataTestUtils.prepareChannel(outputPath.resolve(MetadataTestUtils.INSTALLER_CHANNELS_FILE_PATH), CHANNEL_COMPONENT_UPDATES, CHANNEL_BASE_CORE_19);
+        MetadataTestUtils.prepareChannel(outputPath.resolve(MetadataTestUtils.INSTALLER_CHANNELS_FILE_PATH),
+                defaultRemoteRepositories(),
+                CHANNEL_COMPONENT_UPDATES, CHANNEL_BASE_CORE_19);
         updateAction().performUpdate();
         Optional<Artifact> wildflyCliArtifact = readArtifactFromManifest("org.wildfly.core", "wildfly-cli");
         assertEquals(UPGRADE_VERSION, wildflyCliArtifact.get().getVersion());
@@ -140,7 +147,9 @@ public class InstallationHistoryActionTest extends WfCoreTestBase {
         installation.provision(provisioningDefinition.toProvisioningConfig(),
                 provisioningDefinition.resolveChannels(CHANNELS_RESOLVER_FACTORY));
 
-        MetadataTestUtils.prepareChannel(outputPath.resolve(MetadataTestUtils.INSTALLER_CHANNELS_FILE_PATH), CHANNEL_COMPONENT_UPDATES, CHANNEL_BASE_CORE_19);
+        MetadataTestUtils.prepareChannel(outputPath.resolve(MetadataTestUtils.INSTALLER_CHANNELS_FILE_PATH),
+                defaultRemoteRepositories(),
+                CHANNEL_COMPONENT_UPDATES, CHANNEL_BASE_CORE_19);
         updateAction().performUpdate();
         Optional<Artifact> wildflyCliArtifact = readArtifactFromManifest("org.wildfly.core", "wildfly-cli");
         assertEquals(UPGRADE_VERSION, wildflyCliArtifact.get().getVersion());
@@ -194,7 +203,9 @@ public class InstallationHistoryActionTest extends WfCoreTestBase {
                     Optional.empty()).recordProvision(true);
         }
 
-        MetadataTestUtils.prepareChannel(outputPath.resolve(MetadataTestUtils.INSTALLER_CHANNELS_FILE_PATH), CHANNEL_COMPONENT_UPDATES, CHANNEL_BASE_CORE_19);
+        MetadataTestUtils.prepareChannel(outputPath.resolve(MetadataTestUtils.INSTALLER_CHANNELS_FILE_PATH),
+                defaultRemoteRepositories(),
+                CHANNEL_COMPONENT_UPDATES, CHANNEL_BASE_CORE_19);
         updateAction().performUpdate();
         Optional<Artifact> wildflyCliArtifact = readArtifactFromManifest("org.wildfly.core", "wildfly-cli");
         assertEquals(UPGRADE_VERSION, wildflyCliArtifact.get().getVersion());
@@ -294,10 +305,11 @@ public class InstallationHistoryActionTest extends WfCoreTestBase {
         // create a "broken" channel that would prevent revert if the latest avilable configuration is used
         final InstallationMetadata metadata = InstallationMetadata.loadInstallation(outputPath);
         final ProsperoConfig prosperoConfig = metadata.getProsperoConfig();
+        final List<Channel> preUpdateChannels = new ArrayList<>(prosperoConfig.getChannels());
         prosperoConfig.getChannels().add(new Channel.Builder()
                 .setName("idontexist")
                 .setManifestCoordinate("idont", "exit", "1.0.0")
-                .addRepository("test", "http://test.te")
+                .addRepository("test", "http://idont.exist")
                 .build());
         metadata.updateProsperoConfig(prosperoConfig);
 
@@ -313,11 +325,17 @@ public class InstallationHistoryActionTest extends WfCoreTestBase {
         wildflyCliArtifact = readArtifactFromManifest("org.wildfly.core", "wildfly-cli");
         assertEquals(BASE_VERSION, wildflyCliArtifact.get().getVersion());
         assertTrue("Reverted jar should be present in module", wildflyCliModulePath.resolve(BASE_JAR).toFile().exists());
-        assertThat(ProsperoConfig.readConfig(outputPath.resolve(ProsperoMetadataUtils.METADATA_DIR)).getChannels())
+        final List<Channel> revertedChannels = ProsperoConfig.readConfig(outputPath.resolve(ProsperoMetadataUtils.METADATA_DIR)).getChannels();
+        assertThat(revertedChannels)
                 .withFailMessage("Temporary repository should not be listed")
                 .flatMap(Channel::getRepositories)
                 .map(Repository::getUrl)
-                .doesNotContain(temporaryRepo.toExternalForm());
+                    .doesNotContain(temporaryRepo.toExternalForm())
+                    .doesNotContain("http://idont.exist");
+        assertThat(revertedChannels)
+                .map(Channel::getName)
+                    .containsOnlyOnceElementsOf(preUpdateChannels.stream().map(Channel::getName).collect(Collectors.toList()));
+
     }
 
     @Test
@@ -330,7 +348,9 @@ public class InstallationHistoryActionTest extends WfCoreTestBase {
         installation.provision(provisioningDefinition.toProvisioningConfig(),
                 provisioningDefinition.resolveChannels(CHANNELS_RESOLVER_FACTORY));
 
-        MetadataTestUtils.prepareChannel(outputPath.resolve(MetadataTestUtils.INSTALLER_CHANNELS_FILE_PATH), CHANNEL_COMPONENT_UPDATES, CHANNEL_BASE_CORE_19);
+        MetadataTestUtils.prepareChannel(outputPath.resolve(MetadataTestUtils.INSTALLER_CHANNELS_FILE_PATH),
+                defaultRemoteRepositories(),
+                CHANNEL_COMPONENT_UPDATES, CHANNEL_BASE_CORE_19);
         updateAction().performUpdate();
 
         final InstallationHistoryAction historyAction = new InstallationHistoryAction(outputPath, new AcceptingConsole());
@@ -370,7 +390,9 @@ public class InstallationHistoryActionTest extends WfCoreTestBase {
         installation.provision(provisioningDefinition.toProvisioningConfig(),
                 provisioningDefinition.resolveChannels(CHANNELS_RESOLVER_FACTORY));
 
-        MetadataTestUtils.prepareChannel(outputPath.resolve(MetadataTestUtils.INSTALLER_CHANNELS_FILE_PATH), CHANNEL_COMPONENT_UPDATES, CHANNEL_BASE_CORE_19);
+        MetadataTestUtils.prepareChannel(outputPath.resolve(MetadataTestUtils.INSTALLER_CHANNELS_FILE_PATH),
+                defaultRemoteRepositories(),
+                CHANNEL_COMPONENT_UPDATES, CHANNEL_BASE_CORE_19);
         updateAction().performUpdate();
         Optional<Artifact> wildflyCliArtifact = readArtifactFromManifest("org.wildfly.core", "wildfly-cli");
         assertEquals(UPGRADE_VERSION, wildflyCliArtifact.get().getVersion());
@@ -391,6 +413,51 @@ public class InstallationHistoryActionTest extends WfCoreTestBase {
         assertThatThrownBy(() -> historyAction.prepareRevert(savedState, mavenOptions, Collections.emptyList(), candidate))
                 .isInstanceOf(IllegalArgumentException.class)
                 .message().contains("Can't install the server into a non empty directory");
+    }
+
+    @Test
+    public void rollbackChangesUsesCache() throws Exception {
+        // install server
+        final Path manifestPath = temp.newFile().toPath();
+        channelsFile = temp.newFile().toPath();
+        MetadataTestUtils.copyManifest("manifests/wfcore-base.yaml", manifestPath);
+        MetadataTestUtils.prepareChannel(channelsFile, List.of(manifestPath.toUri().toURL()));
+
+        final Path modulesPaths = outputPath.resolve(Paths.get("modules", "system", "layers", "base"));
+        final Path wildflyCliModulePath = modulesPaths.resolve(Paths.get("org", "jboss", "as", "cli", "main"));
+
+        final ProvisioningDefinition provisioningDefinition = defaultWfCoreDefinition()
+                .setChannelCoordinates(channelsFile.toString())
+                .build();
+        installation.provision(provisioningDefinition.toProvisioningConfig(),
+                provisioningDefinition.resolveChannels(CHANNELS_RESOLVER_FACTORY));
+
+        MetadataTestUtils.upgradeStreamInManifest(manifestPath, resolvedUpgradeArtifact);
+        updateAction().performUpdate();
+        Optional<Artifact> wildflyCliArtifact = readArtifactFromManifest("org.wildfly.core", "wildfly-cli");
+        assertEquals(UPGRADE_VERSION, wildflyCliArtifact.get().getVersion());
+        assertTrue("Updated jar should be present in module", wildflyCliModulePath.resolve(UPGRADE_JAR).toFile().exists());
+
+        ArtifactCache.cleanInstancesCache();
+
+        final InstallationHistoryAction historyAction = new InstallationHistoryAction(outputPath, new AcceptingConsole());
+        final List<SavedState> revisions = historyAction.getRevisions();
+        final SavedState savedState = revisions.get(0);
+
+        // perform the rollback using only internal cache. Offline mode disables other repositories
+        final URL temporaryRepo = mockTemporaryRepo(false);
+        final MavenOptions offlineOptions = MavenOptions.OFFLINE;
+        historyAction.rollback(savedState, offlineOptions, Collections.emptyList());
+
+        // this rollback does nothing as it builds a candidate from current server
+        wildflyCliArtifact = readArtifactFromManifest("org.wildfly.core", "wildfly-cli");
+        assertEquals(UPGRADE_VERSION, wildflyCliArtifact.get().getVersion());
+        assertTrue("Reverted jar should be present in module", wildflyCliModulePath.resolve(UPGRADE_JAR).toFile().exists());
+        assertThat(ProsperoConfig.readConfig(outputPath.resolve(ProsperoMetadataUtils.METADATA_DIR)).getChannels())
+                .withFailMessage("Temporary repository should not be listed")
+                .flatMap(Channel::getRepositories)
+                .map(Repository::getUrl)
+                .doesNotContain(temporaryRepo.toExternalForm());
     }
 
     private UpdateAction updateAction() throws ProvisioningException, OperationException {

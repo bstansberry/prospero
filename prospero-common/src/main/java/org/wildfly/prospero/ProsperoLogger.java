@@ -34,6 +34,7 @@ import org.wildfly.prospero.api.exceptions.MetadataException;
 import org.wildfly.prospero.api.exceptions.NoChannelException;
 import org.wildfly.prospero.api.exceptions.ProvisioningRuntimeException;
 
+import java.io.IOException;
 import java.net.URI;
 import java.net.URL;
 import java.nio.file.Path;
@@ -350,4 +351,22 @@ public interface ProsperoLogger extends BasicLogger {
 
     @Message(id = 260, value = "The selected folder %s cannot be created.")
     IllegalArgumentException dirMustBeWritable(Path directory);
+
+    @Message(id = 261, value = "Channel map data has been written to %s.")
+    @LogMessage(level = Logger.Level.DEBUG)
+    void channelNamesWrittenToFile(String fileName);
+
+    @Message(id = 262, value = "Unable to create a candidate properties file %s.")
+    @LogMessage(level = Logger.Level.ERROR)
+    void unableToWriteChannelNamesToFile(String fileName, @Cause Exception e);
+
+    @Message(id = 263, value = "Unable to read the candidate properties file %s.")
+    @LogMessage(level = Logger.Level.ERROR)
+    void unableToReadChannelNames(String fileName, @Cause Exception e);
+
+    @Message(id = 264, value = "Bad artifact record format in the cache descriptor, line %d: '%s'")
+    IOException unableToReadArtifactCache(int row, String line, @Cause Exception e);
+
+    @Message(id = 265, value = "Unable to create temporary file")
+    ProvisioningException unableToCreateTemporaryFile(@Cause Throwable t);
 }

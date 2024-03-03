@@ -21,8 +21,12 @@ import org.jboss.galleon.universe.maven.MavenUniverseException;
 import org.jboss.galleon.util.HashUtils;
 import org.jboss.galleon.util.IoUtils;
 import org.jboss.logging.Logger;
+import org.wildfly.channel.ChannelManifest;
 import org.wildfly.channel.MavenArtifact;
+import org.wildfly.prospero.ProsperoLogger;
+import org.wildfly.prospero.metadata.ManifestVersionRecord;
 import org.wildfly.prospero.metadata.ProsperoMetadataUtils;
+import org.wildfly.prospero.wfchannel.ResolvedArtifactsStore;
 
 import java.io.BufferedWriter;
 import java.io.File;
@@ -35,6 +39,7 @@ import java.nio.file.StandardOpenOption;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -79,6 +84,12 @@ public class ArtifactCache {
                 instances.put(installationDir.toAbsolutePath(), new ArtifactCache(installationDir));
             }
             return instances.get(installationDir.toAbsolutePath());
+        }
+    }
+
+    public static void cleanInstancesCache() {
+        synchronized (instances) {
+            instances.clear();
         }
     }
 
@@ -168,6 +179,41 @@ public class ArtifactCache {
         record(artifact, cacheDir.resolve(artifact.getFile().getName()));
     }
 
+    /**
+     * detects and caches the manifests from {@code manifestRecord} in {@code CACHE_FOLDER}.
+     * The version and content of the manifest is resolved using {@code resolvedArtifacts}.
+     * NOTE: only manifests identified by maven coordinates are cached.
+     *
+     * @param manifestRecord - record containing all manifest used in installation.
+     * @param resolvedArtifacts - artifacts resolved during provisioning.
+     * @throws IOException
+     */
+    public void cache(ManifestVersionRecord manifestRecord, ResolvedArtifactsStore resolvedArtifacts) throws IOException {
+        Objects.requireNonNull(manifestRecord);
+        Objects.requireNonNull(resolvedArtifacts);
+
+        for (ManifestVersionRecord.MavenManifest manifest : manifestRecord.getMavenManifests()) {
+            final MavenArtifact record = resolvedArtifacts.getManifestVersion(manifest.getGroupId(), manifest.getArtifactId());
+            if (record != null && record.getVersion().equals(manifest.getVersion())) {
+                if (LOG.isDebugEnabled()) {
+                    LOG.debugf("Adding manifest %s to the cache", record);
+                }
+                final File cachedManifest = record.getFile();
+
+                if (cachedManifest.exists()) {
+                    cache(new MavenArtifact(
+                            manifest.getGroupId(),
+                            manifest.getArtifactId(),
+                            ChannelManifest.EXTENSION,
+                            ChannelManifest.CLASSIFIER,
+                            manifest.getVersion(),
+                            cachedManifest
+                    ));
+                }
+            }
+        }
+    }
+
     private static String getCacheFileKey(MavenArtifact artifact) {
         final org.jboss.galleon.universe.maven.MavenArtifact galleonArtifact = new org.jboss.galleon.universe.maven.MavenArtifact();
         galleonArtifact.setGroupId(artifact.getGroupId());
@@ -195,10 +241,14 @@ public class ArtifactCache {
         Path artifactLog = cacheDir.resolve(ArtifactCache.CACHE_FILENAME);
 
         if (Files.exists(artifactLog)) {
+            int row = 0;
+            final List<String> lines = Files.readAllLines(artifactLog);
             try {
-                final List<String> lines = Files.readAllLines(artifactLog);
-                for (String line : lines) {
-                    final String[] splitLine = line.split(ArtifactCache.CACHE_LINE_SEPARATOR);
+                for ( ; row < lines.size(); row++) {
+                    final String[] splitLine = lines.get(row).split(ArtifactCache.CACHE_LINE_SEPARATOR);
+                    if (splitLine.length < 3) {
+                        throw new IOException("Not enough segments, expected format is <GAV>::<hash>::<path>");
+                    }
                     String gav = splitLine[0];
                     String hash = splitLine[1];
                     Path path = Paths.get(splitLine[2]);
@@ -207,8 +257,8 @@ public class ArtifactCache {
                     paths.put(key, installationDir.resolve(path));
                     hashes.put(key, hash);
                 }
-            } catch (MavenUniverseException e) {
-                throw new IOException("Unable to read cached items.", e);
+            } catch (MavenUniverseException | IOException e) {
+                throw ProsperoLogger.ROOT_LOGGER.unableToReadArtifactCache(row + 1, lines.get(row), e);
             }
         }
     }
@@ -219,6 +269,17 @@ public class ArtifactCache {
     }
 
     private static String asKey(String groupId, String artifactId, String extension, String classifier, String version) {
-        return String.format("%s:%s:%s:%s:%s", groupId, artifactId, version, classifier, extension);
+        final StringBuilder buf = new StringBuilder();
+        buf.append(groupId).append(':').append(artifactId);
+        if (version == null) {
+            return buf.toString();
+        }
+        if (extension != null) {
+            buf.append(':').append(extension);
+        }
+        if (classifier != null && !classifier.isEmpty()) {
+            buf.append(':').append(classifier);
+        }
+        return buf.append(':').append(version).toString();
     }
 }
